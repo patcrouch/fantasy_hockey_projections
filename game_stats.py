@@ -76,7 +76,7 @@ class GameStats:
                 pass
             date += delta
 
-        pd.concat(df_list).to_csv(f"{file_name}.csv")   
+        pd.concat(df_list).to_csv(file_name)   
 
     #helper functions to calculate FP
     def ev_fp(self,g,a,s,b):
