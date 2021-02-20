@@ -5,12 +5,10 @@ import datetime as dt
 #Can write csv files to path that keeps all dates separate
 #and can concat all dates into one csv given a file name
 class GameStats:
-    def __init__(self,ev_path,pp_path,pk_path,start_date,end_date):
+    def __init__(self,ev_path,pp_path,pk_path):
         self.ev_path = ev_path
         self.pp_path = pp_path
         self.pk_path = pk_path
-        self.start_date = start_date
-        self.end_date = end_date
         self.stats_list = ['Player','TOI','Goals','Total Assists','Shots','Shots Blocked','ixG']
 
     #reads in stats from Natural Stat Trick and outputs a clean dataframe with relevant data
@@ -43,38 +41,32 @@ class GameStats:
     WILL OVERWRITE EXISTING FILES
     '''
     #writes daily stats dfs into specified path name
-    def write_daily_stats(self,path_name):
-        date = self.start_date
-        end_date = self.end_date
+    def write_daily_stats(self,path_name,start_date,end_date):        
         delta = dt.timedelta(days=1)
-
         #loops through each date in range and writes file in the form yy_mm_dd in path name
-        while date <= end_date:
+        while start_date <= end_date:
             try:
-                df = self.get_day_stats(date)
-                df.to_csv(f"{path_name}/{date.strftime('%y_%m_%d')}.csv")
+                df = self.get_day_stats(start_date)
+                df.to_csv(f"{path_name}/{start_date.strftime('%y_%m_%d')}.csv")
             except:
                 pass
-            date += delta
+            start_date += delta
 
     '''
     BE CAREFUL WITH THIS FUNCTION
     WILL OVERWRITE EXISTING FILES
     '''
     #Combines all daily dfs into one file indexed by date, team and player
-    def write_combined_stats(self,file_name):
-        date = self.start_date
-        end_date = self.end_date
+    def write_combined_stats(self,file_name,start_date,end_date):        
         delta = dt.timedelta(days=1)
-        
         #Gets stats for each day then concats them to write to given file
         df_list = []
-        while date <= end_date:
+        while start_date <= end_date:
             try:
-                df_list.append(self.get_day_stats(date))
+                df_list.append(self.get_day_stats(start_date))
             except:
                 pass
-            date += delta
+            start_date += delta
 
         pd.concat(df_list).to_csv(file_name)   
 
