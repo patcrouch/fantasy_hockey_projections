@@ -13,14 +13,14 @@ class Feature:
         self.stats['F'] = self.stats['S'][self.stats['S']['position'].isin(['L','C','R'])]
         self.stats['D'] = self.stats['S'][self.stats['S']['position']=='D']
         self.player_pool_path = player_pool_path
-        self.stats_list = ['evTOI','evG','evA','evSH','evBkS','evixG']
+        self.stats_list = ['TOI','evTOI','evG','evA','evSH','evBkS','evixG']
 
     #reads in player pool file, cleans, and separates by position, returns dict of positions
     def get_player_pool(self,file_name):
         player_pool = pd.read_csv(file_name)
         player_pool['name'] = player_pool['first_name']+' '+player_pool['last_name']
         player_pool = player_pool[player_pool['injury_status']!='O']
-        player_pool = player_pool[['name','team','position','reg_line','pp_line','implied_team_score']]
+        player_pool = player_pool[['name','team','opp','position','reg_line','pp_line','implied_team_score','ppg_projection','salary']]
         player_pool = player_pool.set_index('name')
 
         position_pool = {}
@@ -55,12 +55,13 @@ class Feature:
     #Players with fewer games played than the sample size have their stats regressed using the naive regression function
     def regressed_mean(self,group,player_pool,sample_size,regression_scalar):
         means = group.apply(lambda x: x.iloc[-sample_size:].mean())     #calculates mean stats for a player in last n games
-        means = (means.drop('evTOI',axis=1).div(means['evTOI'],axis=0)*60).add_suffix('/60')
-        means['GP'] = group.apply(lambda x: len(x.iloc[-sample_size:]))     #calculates games played from a player
-           
-        reg_means = means.join(player_pool[[]],how='inner')     #filters to only include players in player pool
+        means_per60 = (means.drop(['TOI','evTOI'],axis=1).div(means['evTOI'],axis=0)*60).add_suffix('/60')
+        means_per60['GP'] = group.apply(lambda x: len(x.iloc[-sample_size:]))     #calculates games played from a player
+        means_per60['mean_TOI'] = means['TOI']
+
+        reg_means = means_per60.join(player_pool[[]],how='inner')     #filters to only include players in player pool
         #Regresses players with GP less than sample size 
-        reg_means = reg_means.index.to_series().apply(lambda x: self.naive_regression(x,means,sample_size,regression_scalar)).drop('GP',axis=1)
+        reg_means = reg_means.index.to_series().apply(lambda x: self.naive_regression(x,means_per60,sample_size,regression_scalar)).drop('GP',axis=1)
 
         return reg_means
 
@@ -68,7 +69,7 @@ class Feature:
     def get_line(self,team,line,name,line_list):
         if pd.notna(line):
             l = line_list.loc[team,line].copy()
-            l.remove(name)
+            l.discard(name)
             return l
         else:
             return []
@@ -88,14 +89,14 @@ class Feature:
     #Function that calculates the average value of a line's stat to be used in features
     def get_line_mate_stat(self,player_pool,stat_df,stat):
         #Lines, D partners, and power play lines are calculated using line numbers in player pool df
-        line_mates = player_pool['F'][['team','reg_line']].copy().reset_index()     #forwards grouped by team and reg line
-        lines = line_mates.groupby(['team','reg_line'])['name'].apply(list).unstack()
+        line_mates = player_pool['F'][['team','reg_line','pp_line']].copy().reset_index()     #forwards grouped by team and reg line
+        lines = line_mates.groupby(['team','reg_line'])['name'].apply(set).unstack()
 
         d_partners = player_pool['D'][['team','reg_line']].copy().reset_index()     #defenders grouped by team and d pair
-        d_pairs = d_partners.groupby(['team','reg_line'])['name'].apply(list).unstack()
+        d_pairs = d_partners.groupby(['team','reg_line'])['name'].apply(set).unstack()
 
         pp_line_mates = player_pool['S'][['team','pp_line']].copy().reset_index()   #all skaters grouped by pp line
-        pp_lines = pp_line_mates.groupby(['team','pp_line'])['name'].apply(list).unstack()
+        pp_lines = line_mates.groupby(['team','pp_line'])['name'].apply(set).unstack()
 
         #Lines are calculated by get_line function and added as a column to resepective dfs
         line_mates['mates'] = line_mates.apply(lambda x: self.get_line(x['team'],x['reg_line'],x['name'],lines),axis=1)
@@ -119,37 +120,42 @@ class Feature:
     
     #Takes data from all other calculations and puts them into df with the actual target variable scored on that day FP/60
     #Calculates for a given  player pool, stat df (like the one returned by regressed_mean), position, and date
-    def get_features(self,player_pool,stat_df,pos,date):
+    def get_features(self,player_pool,stat_df,pos,date,include_actual=False):
         lm_stats = self.get_line_mate_stat(player_pool,stat_df,'evixG/60')  #gets line mate stats
         feat = stat_df.join(lm_stats,how='inner')   #joins line_mate stats to stat_df
-        feat = feat.join(player_pool[pos][['implied_team_score','position']],how='inner')   #joins imp team score and pos from player pool
-        feat = feat.join(self.stats[pos].xs(date.strftime('%y_%m_%d'))['FP/60'],how='inner')    #attahces actual FP/60 on the day
+        feat = feat.join(player_pool[pos][['implied_team_score','position','team','opp','ppg_projection','salary']],how='inner')   #joins imp team score and pos from player pool
+        if include_actual:
+            feat = feat.join(self.stats[pos].xs(date.strftime('%y_%m_%d'))[['TOI','FP/60','FP']],how='inner')    #attaches actual FP/60 on the day
+            feat['value'] = feat['FP']/feat['salary']*1000
         feat['date'] = date.strftime('%y_%m_%d')
-        feat = feat.reset_index().set_index(['date','name','position'])
-        
+        feat = feat.reset_index().set_index(['date','name','position','team','opp'])
         return feat
 
     '''
     BE CAREFUL WITH THIS FUNCTION
     WILL OVERWRITE EXISTING FILES
     '''
+
+    def write_daily_features_file(self,feat_path,date,stat_func,include_actual=False,**func_args):
+        #Calculates player pools and groups
+        player_pool = self.get_player_pool(f"{self.player_pool_path}/DFF_NHL_cheatsheet_{date.strftime('%Y-%m-%d')}.csv")
+        player_groups = self.get_player_group(date)
+        #Calculates stats for forwards and defenders
+        player_stats = {pos:stat_func(player_groups[pos],player_pool[pos],**func_args) for pos in ['F','D']}   
+        player_stats['S'] = pd.concat([player_stats['F'],player_stats['D']])
+        #Calculates all features for forwards and defenders
+        feat = {pos:self.get_features(player_pool,player_stats['S'],pos,date,include_actual) for pos in ['F','D']}
+        #Combines features for all skaters and writes to a csv in the given folder
+        pd.concat(feat.values()).fillna(0).to_csv(f"{feat_path}/{date.strftime('%y_%m_%d')}.csv")
+
     #Calculates features for a range of dates and writes corresponding csvs to given file
     #Takes a path name to write to, a start and end date, and a function to calculate stats plus optional arguments that may be used by the function
     #Currently, the only function to use is regressed mean, but others can be coded and used in the future
-    def write_daily_features(self,feat_path_name,start_date,end_date,stat_func,**func_args):
+    def write_daily_features_range(self,feat_path,start_date,end_date,stat_func,include_actual=False,**func_args):
         #loops through dates in the range
         while start_date <= end_date:
             try:
-                #Calculates player pools and groups
-                player_pool = self.get_player_pool(f"{self.player_pool_path}/DFF_NHL_cheatsheet_{start_date.strftime('%Y-%m-%d')}.csv")
-                player_groups = self.get_player_group(start_date)
-                #Calculates stats for forwards and defenders
-                player_stats = {pos:stat_func(player_groups[pos],player_pool[pos],**func_args) for pos in ['F','D']}   
-                player_stats['S'] = pd.concat([player_stats['F'],player_stats['D']])
-                #Calculates all features for forwards and defenders
-                feat = {pos:self.get_features(player_pool,player_stats['S'],pos,start_date) for pos in ['F','D']}
-                #Combines features for all skaters and writes to a csv in the given folder
-                pd.concat(feat.values()).to_csv(f"{feat_path_name}/{start_date.strftime('%y_%m_%d')}.csv")
+                self.write_daily_features_file(feat_path,start_date,stat_func,include_actual,**func_args)
             except:
                 pass
             start_date += dt.timedelta(days=1)
@@ -159,7 +165,7 @@ class Feature:
     WILL OVERWRITE EXISTING FILES
     '''
     #Same as the write_daily_features function but instead combines all features into one file to be written with a given file name
-    def write_combined_features(self,file_name,start_date,end_date,stat_func,*func_args):
+    def write_combined_features(self,file_name,start_date,end_date,stat_func,**func_args):
         df_list = []
         while start_date <= end_date:
             try:
@@ -179,9 +185,10 @@ class Feature:
     WILL OVERWRITE EXISTING FILES
     '''
     #Also creates one file for all features but uses already calculated daily feature files to avoid recalculation
-    def write_concated_daily_features(self,file_name,path_name):
+    def write_concated_daily_features(self,file_name,path_name,max_date=dt.date.today()):
         file_list = os.listdir(path_name)
         df_list = []
         for file in file_list:
-            df_list.append(pd.read_csv(f"{path_name}/{file}").set_index(['date','name','position']))
+            if file < max_date.strftime('%y_%m_%d'):
+                df_list.append(pd.read_csv(f"{path_name}/{file}").set_index(['date','name','position']))
         pd.concat(df_list).to_csv(file_name)

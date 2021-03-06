@@ -1,5 +1,6 @@
 import pandas as pd
 import datetime as dt
+import os
 
 #Class that writes csv files for relevant stats of each day in given range
 #Can write csv files to path that keeps all dates separate
@@ -16,7 +17,7 @@ class GameStats:
         stats_list_rename = pd.Series(['name','TOI','G','A','SH','BkS','ixG'],self.stats_list)
 
         #reads stats from separate paths giving game stats for even strength, power play, and penalty kill
-        ev = pd.read_csv(f"{self.ev_path}/{date.strftime('%y_%m_%d')}.csv")[['Team']+self.stats_list].rename(columns='ev'+stats_list_rename.drop('Player'))
+        ev = pd.read_csv(f"{self.ev_path}/{date.strftime('%y_%m_%d')}.csv")[['Team','Position']+self.stats_list].rename(columns='ev'+stats_list_rename.drop('Player'))
         pp = pd.read_csv(f"{self.pp_path}/{date.strftime('%y_%m_%d')}.csv")[self.stats_list].rename(columns='pp'+stats_list_rename.drop('Player'))
         pk = pd.read_csv(f"{self.pk_path}/{date.strftime('%y_%m_%d')}.csv")[self.stats_list].rename(columns='pk'+stats_list_rename.drop('Player'))
 
@@ -24,7 +25,7 @@ class GameStats:
         stats = ev.merge(pp,on='Player',how='outer')
         stats = stats.merge(pk,on='Player',how='outer')
         stats['date'] = date.strftime('%y_%m_%d')
-        stats = stats.fillna(0).rename(columns={'Team':'team','Player':'name'}).set_index(['date','team','name'])
+        stats = stats.fillna(0).rename(columns={'Team':'team','Player':'name','Position':'position'}).set_index(['date','team','name','position'])
 
         #calculates fantasy points with helper functions
         stats['evFP'] = stats.apply(lambda x: self.ev_fp(x['evG'],x['evA'],x['evSH'],x['evBkS']),axis=1)
@@ -40,17 +41,20 @@ class GameStats:
     BE CAREFUL WITH THIS FUNCTION
     WILL OVERWRITE EXISTING FILES
     '''
+
+    def write_daily_stats_file(self,path_name,date):
+        df = self.get_day_stats(date)
+        df.to_csv(f"{path_name}/{date.strftime('%y_%m_%d')}.csv")
+
     #writes daily stats dfs into specified path name
-    def write_daily_stats(self,path_name,start_date,end_date):        
-        delta = dt.timedelta(days=1)
+    def write_daily_stats_range(self,path_name,start_date,end_date):
         #loops through each date in range and writes file in the form yy_mm_dd in path name
         while start_date <= end_date:
             try:
-                df = self.get_day_stats(start_date)
-                df.to_csv(f"{path_name}/{start_date.strftime('%y_%m_%d')}.csv")
+                self.write_daily_stats_file(path_name,start_date)
             except:
                 pass
-            start_date += delta
+            start_date += dt.timedelta(days=1)
 
     '''
     BE CAREFUL WITH THIS FUNCTION
@@ -58,7 +62,6 @@ class GameStats:
     '''
     #Combines all daily dfs into one file indexed by date, team and player
     def write_combined_stats(self,file_name,start_date,end_date):        
-        delta = dt.timedelta(days=1)
         #Gets stats for each day then concats them to write to given file
         df_list = []
         while start_date <= end_date:
@@ -66,9 +69,23 @@ class GameStats:
                 df_list.append(self.get_day_stats(start_date))
             except:
                 pass
-            start_date += delta
+            start_date += dt.timedelta(days=1)
 
-        pd.concat(df_list).to_csv(file_name)   
+        pd.concat(df_list).to_csv(file_name)
+
+    '''
+    BE CAREFUL WITH THIS FUNCTION
+    WILL OVERWRITE EXISTING FILES
+    '''
+    #Similar functionto write_combined_stats that reads in already processed daily stat csvs to avoid re-processing
+    def write_concated_daily_stats(self,file_name,path_name,max_date=dt.date.today()):
+        file_list = os.listdir(path_name)
+        df_list = []
+        for file in file_list:
+            if file < max_date.strftime('%y_%m_%d'):
+                df_list.append(pd.read_csv(f"{path_name}/{file}").set_index(['date','team','name','position']))
+        pd.concat(df_list).to_csv(file_name)
+            
 
     #helper functions to calculate FP
     def ev_fp(self,g,a,s,b):
