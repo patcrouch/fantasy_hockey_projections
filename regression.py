@@ -7,7 +7,8 @@ class Regression:
         #reades in feature file and separates by position
         df = pd.read_csv(feature_file).set_index(['date','name'])
         self.features = {}
-        self.features['S'] = df.drop('position',axis=1)
+        self.features['G'] = df[df['position']=='G'].drop('position',axis=1)
+        self.features['S'] = df[df['position']!='G'].drop('position',axis=1)
         self.features['F'] = df[df['position'].isin(['C','W'])].drop('position',axis=1)
         self.features['D'] = df[df['position']=='D'].drop('position',axis=1)
 

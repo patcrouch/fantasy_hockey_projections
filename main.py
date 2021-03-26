@@ -6,13 +6,15 @@ dp_args = {
     'ev_path':'ev_game_stats',
     'pp_path':'pp_game_stats',
     'pk_path':'pk_game_stats',
+    'goalie_path':'goalie_stats',
+    'game_path':'game_info',
     'stats_path':'daily_game_stats',
     'stats_file':'all_game_stats.csv',
     'player_pool_path':'player_pool',
     'feat_path':'daily_features_last30',
     'feat_file':'train_features.csv',
     'proj_path':'projections_last30',
-    'date': dt.date(2021,3,5)
+    'date':dt.date(2021,3,26)
 }
 
 DP = DailyProjection(**dp_args)

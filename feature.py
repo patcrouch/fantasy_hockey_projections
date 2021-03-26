@@ -9,18 +9,19 @@ import os
 class Feature:
     def __init__(self,stats_file,player_pool_path):
         self.stats = {}
-        self.stats['S'] = pd.read_csv(stats_file).set_index(['date','name'])
-        self.stats['F'] = self.stats['S'][self.stats['S']['position'].isin(['L','C','R'])]
-        self.stats['D'] = self.stats['S'][self.stats['S']['position']=='D']
+        stat_df = pd.read_csv(stats_file,low_memory=False).set_index(['date','name'])
+        self.stats['S'] = stat_df[stat_df['position']!='G']
+        self.stats['F'] = stat_df[stat_df['position'].isin(['L','C','R'])]
+        self.stats['D'] = stat_df[stat_df['position']=='D']
+        self.stats['G'] = stat_df[stat_df['position']=='G']
         self.player_pool_path = player_pool_path
-        self.stats_list = ['TOI','evTOI','evG','evA','evSH','evBkS','evixG']
+        self.stats_list = ['TOI','evTOI','evG','evA','evSH','evBkS','evixG','SV','GA','GSAA','xGSAA']
 
     #reads in player pool file, cleans, and separates by position, returns dict of positions
     def get_player_pool(self,file_name):
         player_pool = pd.read_csv(file_name)
         player_pool['name'] = player_pool['first_name']+' '+player_pool['last_name']
         player_pool = player_pool[player_pool['injury_status']!='O']
-        player_pool = player_pool[['name','team','opp','position','reg_line','pp_line','implied_team_score','ppg_projection','salary']]
         player_pool = player_pool.set_index('name')
 
         position_pool = {}
@@ -33,10 +34,7 @@ class Feature:
 
     #groups given player pool to be used for stat aggregation functions, returns dict of groups based on position
     def get_player_group(self,date):
-        groups = {}
-        groups['S'] = self.stats['S'].loc[:date.strftime('%y_%m_%d')][self.stats_list].dropna().groupby('name')
-        groups['F'] = self.stats['F'].loc[:date.strftime('%y_%m_%d')][self.stats_list].dropna().groupby('name')
-        groups['D'] = self.stats['D'].loc[:date.strftime('%y_%m_%d')][self.stats_list].dropna().groupby('name')
+        groups = {key:self.stats[key].loc[:date.strftime('%y_%m_%d')][self.stats_list].dropna().groupby('name') for key in self.stats}
 
         return groups
 
@@ -62,8 +60,12 @@ class Feature:
         reg_means = means_per60.join(player_pool[[]],how='inner')     #filters to only include players in player pool
         #Regresses players with GP less than sample size 
         reg_means = reg_means.index.to_series().apply(lambda x: self.naive_regression(x,means_per60,sample_size,regression_scalar)).drop('GP',axis=1)
-
+        
         return reg_means
+
+    #future function that will weight more recent stats more heavily in features
+    def recency_weighted_mean(self,group,player_pool,sample_size,regression_scalar):
+        pass
 
     #Helper function that removes the given player from a line list created in get line mate stat function
     def get_line(self,team,line,name,line_list):
@@ -85,6 +87,11 @@ class Feature:
             except:
                 pass
         return pd.Series(xG,dtype='float64').mean()
+
+    #helper function to calulate implied win probability of a game using vegas odds
+    def implied_win_prob(self,imp,ou):
+        p = (imp/(ou-imp))**1.8/(1+(imp/(ou-imp))**1.8)
+        return p
 
     #Function that calculates the average value of a line's stat to be used in features
     def get_line_mate_stat(self,player_pool,stat_df,stat):
@@ -121,14 +128,21 @@ class Feature:
     #Takes data from all other calculations and puts them into df with the actual target variable scored on that day FP/60
     #Calculates for a given  player pool, stat df (like the one returned by regressed_mean), position, and date
     def get_features(self,player_pool,stat_df,pos,date,include_actual=False):
-        lm_stats = self.get_line_mate_stat(player_pool,stat_df,'evixG/60')  #gets line mate stats
-        feat = stat_df.join(lm_stats,how='inner')   #joins line_mate stats to stat_df
-        feat = feat.join(player_pool[pos][['implied_team_score','position','team','opp','ppg_projection','salary']],how='inner')   #joins imp team score and pos from player pool
+        feat = stat_df.copy()
+        if pos != 'G':
+            lm_stats = self.get_line_mate_stat(player_pool,stat_df,'evixG/60')  #gets line mate stats
+            feat = feat.join(lm_stats,how='inner')   #joins line_mate stats to stat_df
+        player_pool_list = ['implied_team_score','over_under','position','team','opp','ppg_projection','salary']
+        feat = feat.join(player_pool[pos][player_pool_list],how='inner')   #joins imp team score and pos from player pool
         if include_actual:
             feat = feat.join(self.stats[pos].xs(date.strftime('%y_%m_%d'))[['TOI','FP/60','FP']],how='inner')    #attaches actual FP/60 on the day
             feat['value'] = feat['FP']/feat['salary']*1000
+        #calculates implied win probability from implied score and over under
+        feat['implied_win_prob'] = feat.apply(lambda x: self.implied_win_prob(x['implied_team_score'],x['over_under']),axis=1)
+        feat['implied_opp_score'] = feat['over_under'] - feat['implied_team_score']
         feat['date'] = date.strftime('%y_%m_%d')
         feat = feat.reset_index().set_index(['date','name','position','team','opp'])
+        
         return feat
 
     '''
@@ -141,10 +155,11 @@ class Feature:
         player_pool = self.get_player_pool(f"{self.player_pool_path}/DFF_NHL_cheatsheet_{date.strftime('%Y-%m-%d')}.csv")
         player_groups = self.get_player_group(date)
         #Calculates stats for forwards and defenders
-        player_stats = {pos:stat_func(player_groups[pos],player_pool[pos],**func_args) for pos in ['F','D']}   
+        player_stats = {pos:stat_func(player_groups[pos],player_pool[pos],**func_args) for pos in ['F','D','G']}   
         player_stats['S'] = pd.concat([player_stats['F'],player_stats['D']])
         #Calculates all features for forwards and defenders
         feat = {pos:self.get_features(player_pool,player_stats['S'],pos,date,include_actual) for pos in ['F','D']}
+        feat['G'] = self.get_features(player_pool,player_stats['G'],'G',date,include_actual)
         #Combines features for all skaters and writes to a csv in the given folder
         pd.concat(feat.values()).fillna(0).to_csv(f"{feat_path}/{date.strftime('%y_%m_%d')}.csv")
 
